@@ -1,0 +1,6 @@
+[submodule "evalscope"]
+	path = evalscope
+	url = https://github.com/XiangWanggithub/evalscope.git
+[submodule "vllm"]
+	path = vllm
+	url = https://github.com/XiangWanggithub/vllm.git
