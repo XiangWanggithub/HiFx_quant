@@ -38,3 +38,6 @@ env/
 # Cache
 .cache/
 *.log
+
+# Outputs
+outputs/
