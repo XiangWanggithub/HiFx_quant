@@ -42,8 +42,9 @@ def parse_args():
     parser.add_argument(
         '--dataset',
         type=str,
-        default='aime24',
-        help='Dataset/benchmark to evaluate on (e.g., aime24, gsm8k, math_500, competition_math)'
+        nargs='+',
+        default=['aime24'],
+        help='Dataset(s) to evaluate on (e.g., aime24 gsm8k math_500 arc)'
     )
 
     parser.add_argument(
@@ -82,7 +83,7 @@ def parse_args():
     parser.add_argument(
         '--batch-size',
         type=int,
-        default=1,
+        default=8,
         help='Batch size for evaluation (number of samples processed in parallel)'
     )
 
@@ -132,7 +133,7 @@ def main():
 
     # Set output directory with dataset name if not specified
     if args.output_dir is None:
-        args.output_dir = f'outputs/{args.dataset}_eval'
+        args.output_dir = f'outputs/{"_".join(args.dataset)}_eval'
 
     # Get generation config based on mode
     generation_config = get_generation_config(args.sampling, args.enable_thinking)
@@ -145,14 +146,15 @@ def main():
     # Prepare dataset_args for thinking mode (filter out thinking blocks)
     dataset_args = {}
     if args.enable_thinking:
-        dataset_args[args.dataset] = {
-            'filters': {'remove_until': '</think>'}
-        }
+        for ds in args.dataset:
+            dataset_args[ds] = {
+                'filters': {'remove_until': '</think>'}
+            }
 
     # Build TaskConfig
     task_cfg = TaskConfig(
         model=args.model_path,
-        datasets=[args.dataset],
+        datasets=args.dataset,
         eval_type='checkpoint',  # Direct model loading
         # eval_backend defaults to 'native' - no need to set it
         work_dir=args.output_dir,
@@ -170,7 +172,7 @@ def main():
     print("EVALUATION CONFIGURATION")
     print("=" * 80)
     print(f"Model Path:      {args.model_path}")
-    print(f"Dataset:         {args.dataset}")
+    print(f"Dataset(s):      {', '.join(args.dataset)}")
     print(f"Generation Mode: {'Sampling' if args.sampling else 'Greedy'}")
     print(f"Thinking Mode:   {'Enabled' if args.enable_thinking else 'Disabled'}")
     print(f"Sample Limit:    {args.limit if args.limit else 'All'}")
