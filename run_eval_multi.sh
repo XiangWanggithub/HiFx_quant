@@ -76,7 +76,8 @@ print(f\"{report['dataset_name']}:{report['score']}\")
         ALL_RESULTS+=("$RESULT")
         DS_NAME="${RESULT%%:*}"
         DS_SCORE="${RESULT##*:}"
-        echo "  Run $i  $DS_NAME: $DS_SCORE"
+        DS_PCT=$(python3 -c "print(f'{float('$DS_SCORE') * 100:.2f}')")
+        echo "  Run $i  $DS_NAME: ${DS_PCT}%"
     done <<< "$REPORT_FILES"
 
     echo ""
@@ -98,21 +99,22 @@ for entry in sys.argv[1:]:
 
 for ds in sorted(results):
     scores = results[ds]
-    n = len(scores)
-    mean = sum(scores) / n
+    pct = [s * 100 for s in scores]
+    n = len(pct)
+    mean = sum(pct) / n
     if n > 1:
-        variance = sum((s - mean) ** 2 for s in scores) / (n - 1)
+        variance = sum((s - mean) ** 2 for s in pct) / (n - 1)
         std = variance ** 0.5
     else:
         std = 0.0
 
     print(f'Dataset: {ds}')
-    print(f'  Scores: {scores}')
-    print(f'  Num runs: {n}')
-    print(f'  Mean:     {mean:.4f}')
-    print(f'  Std:      {std:.4f}')
-    print(f'  Min:      {min(scores):.4f}')
-    print(f'  Max:      {max(scores):.4f}')
+    print(f'  Scores (%): {[round(s, 2) for s in pct]}')
+    print(f'  Num runs:   {n}')
+    print(f'  Mean:       {mean:.2f}%')
+    print(f'  Std:        {std:.2f}%')
+    print(f'  Min:        {min(pct):.2f}%')
+    print(f'  Max:        {max(pct):.2f}%')
     print()
 " "${ALL_RESULTS[@]}"
 
