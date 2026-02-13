@@ -87,6 +87,13 @@ def parse_args():
         help='Batch size for evaluation (number of samples processed in parallel)'
     )
 
+    parser.add_argument(
+        '--repeats',
+        type=int,
+        default=1,
+        help='Number of times to repeat the evaluation'
+    )
+
     return parser.parse_args()
 
 
@@ -165,6 +172,7 @@ def main():
         dataset_dir='/home/data/.cache/evalscope',  # As per CLAUDE.local.md
         model_args=model_args,  # Will be empty dict if no thinking mode
         dataset_args=dataset_args,  # Will be empty dict if no thinking mode
+        repeats=args.repeats,
     )
 
     # Print configuration summary
@@ -177,6 +185,7 @@ def main():
     print(f"Thinking Mode:   {'Enabled' if args.enable_thinking else 'Disabled'}")
     print(f"Sample Limit:    {args.limit if args.limit else 'All'}")
     print(f"Batch Size:      {args.batch_size}")
+    print(f"Repeats:         {args.repeats}")
     print(f"Random Seed:     {args.seed}")
     print(f"Output Dir:      {args.output_dir}")
     print(f"\nGeneration Config:")
