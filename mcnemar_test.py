@@ -94,6 +94,7 @@ def load_reviews(run_dir, metric):
     for fpath in sorted(jsonl_files):
         subset_name = os.path.splitext(os.path.basename(fpath))[0]  # e.g., "arc_ARC-Challenge"
         subset_results = {}
+        skipped = 0
         with open(fpath, 'r') as f:
             for line in f:
                 line = line.strip()
@@ -103,10 +104,13 @@ def load_reviews(run_dir, metric):
                 idx = entry['index']
                 score_value = entry['sample_score']['score']['value']
                 if metric not in score_value:
-                    available = list(score_value.keys())
-                    print(f"Error: Metric '{metric}' not found. Available: {available}", file=sys.stderr)
-                    sys.exit(1)
+                    skipped += 1
+                    continue
                 subset_results[idx] = score_value[metric]
+        if not subset_results and skipped > 0:
+            print(f"Warning: No entries with metric '{metric}' in {fpath}", file=sys.stderr)
+        elif skipped > 0:
+            print(f"Warning: Skipped {skipped} entries without metric '{metric}' in {os.path.basename(fpath)}", file=sys.stderr)
         results[subset_name] = subset_results
 
     return model_name, results
