@@ -5,12 +5,16 @@ McNemar's Test for Model Comparison
 Compares two models' per-question correctness on the same benchmark using
 McNemar's test. Reads evalscope review JSONL files from two evaluation runs.
 
+When evaluations use repeats > 1, each question has multiple responses.
+These are aggregated via majority vote (correct if >50% of repeats are correct)
+before building the contingency table.
+
 Usage:
     python mcnemar_test.py <run_dir_a> <run_dir_b> [--metric acc] [--alpha 0.05]
 
 Example:
-    python test_evalscope.py --model-path /home/models/Qwen3-0.6B --dataset arc
-    python test_evalscope.py --model-path /home/models/Qwen3-1.7B --dataset arc
+    python test_evalscope.py --model-path /home/models/Qwen3-0.6B --dataset arc --repeats 20
+    python test_evalscope.py --model-path /home/models/Qwen3-1.7B --dataset arc --repeats 20
     python mcnemar_test.py outputs/arc_eval/20260211_150547 outputs/arc_eval/20260213_120000
 """
 
@@ -34,10 +38,9 @@ def parse_args():
     return parser.parse_args()
 
 
-def chi2_sf(x, df=1):
+def chi2_sf(x):
     """Survival function (1 - CDF) for chi-squared distribution with df=1.
 
-    Uses the regularized incomplete gamma function approximation.
     For df=1, chi2_sf(x) = erfc(sqrt(x/2)).
     """
     if x <= 0:
@@ -52,8 +55,7 @@ def binom_cdf(k, n, p=0.5):
     if k >= n:
         return 1.0
     total = 0.0
-    # Use log to avoid overflow for large n
-    log_pmf = n * math.log(1 - p)  # log(P(X=0))
+    log_pmf = n * math.log(1 - p)
     total += math.exp(log_pmf)
     for i in range(1, k + 1):
         log_pmf += math.log(n - i + 1) - math.log(i) + math.log(p) - math.log(1 - p)
@@ -64,16 +66,18 @@ def binom_cdf(k, n, p=0.5):
 def load_reviews(run_dir, metric):
     """Load per-question results from review JSONL files in a run directory.
 
+    Groups results by group_id to handle repeats. Each question maps to a list
+    of scores (length 1 without repeats, length N with repeats=N).
+
     Returns:
         model_name: str
-        results: dict mapping subset_name -> dict mapping question_index -> score
+        results: dict mapping subset_name -> dict mapping group_id -> list[float]
     """
     reviews_dir = os.path.join(run_dir, 'reviews')
     if not os.path.isdir(reviews_dir):
         print(f"Error: No reviews directory found at {reviews_dir}", file=sys.stderr)
         sys.exit(1)
 
-    # Find model name (subdirectory under reviews/)
     model_dirs = [d for d in os.listdir(reviews_dir)
                   if os.path.isdir(os.path.join(reviews_dir, d))]
     if len(model_dirs) == 0:
@@ -83,7 +87,6 @@ def load_reviews(run_dir, metric):
         print(f"Warning: Multiple model directories found: {model_dirs}. Using first.", file=sys.stderr)
     model_name = model_dirs[0]
 
-    # Find all review JSONL files
     model_reviews_dir = os.path.join(reviews_dir, model_name)
     jsonl_files = glob.glob(os.path.join(model_reviews_dir, '*.jsonl'))
     if not jsonl_files:
@@ -92,7 +95,7 @@ def load_reviews(run_dir, metric):
 
     results = {}
     for fpath in sorted(jsonl_files):
-        subset_name = os.path.splitext(os.path.basename(fpath))[0]  # e.g., "arc_ARC-Challenge"
+        subset_name = os.path.splitext(os.path.basename(fpath))[0]
         subset_results = {}
         skipped = 0
         with open(fpath, 'r') as f:
@@ -101,12 +104,16 @@ def load_reviews(run_dir, metric):
                 if not line:
                     continue
                 entry = json.loads(line)
-                idx = entry['index']
-                score_value = entry['sample_score']['score']['value']
+                score_data = entry['sample_score']
+                score_value = score_data['score']['value']
                 if metric not in score_value:
                     skipped += 1
                     continue
-                subset_results[idx] = score_value[metric]
+                # Use group_id to identify the original question across repeats
+                gid = score_data.get('group_id')
+                if gid is None:
+                    gid = entry['index']
+                subset_results.setdefault(gid, []).append(score_value[metric])
         if not subset_results and skipped > 0:
             print(f"Warning: No entries with metric '{metric}' in {fpath}", file=sys.stderr)
         elif skipped > 0:
@@ -119,10 +126,6 @@ def load_reviews(run_dir, metric):
 def mcnemar_test(b, c):
     """Perform McNemar's test given discordant pair counts.
 
-    Args:
-        b: count where model A correct, model B wrong
-        c: count where model A wrong, model B correct
-
     Returns:
         (method, statistic, p_value)
     """
@@ -131,25 +134,28 @@ def mcnemar_test(b, c):
         return 'none', 0.0, 1.0
 
     if n >= 25:
-        # Chi-squared with continuity correction
         chi2 = (abs(b - c) - 1) ** 2 / n
         p = chi2_sf(chi2)
         return 'chi2', chi2, p
     else:
-        # Exact binomial test (two-sided)
         k = min(b, c)
         p = 2 * binom_cdf(k, n, 0.5)
         p = min(p, 1.0)
         return 'exact', k, p
 
 
+def majority_vote(scores):
+    """Return True if more than half of scores indicate correctness (>= 0.5)."""
+    correct = sum(1 for s in scores if s >= 0.5)
+    return correct > len(scores) / 2
+
+
 def print_comparison(subset_name, model_a, model_b, results_a, results_b, alpha):
     """Compare two models on a single subset and print results.
 
     Returns:
-        (a, b, c, d) contingency counts for aggregation, or None if no overlap.
+        dict with contingency counts and accuracy stats, or None if no overlap.
     """
-    # Find common question indices
     common = set(results_a.keys()) & set(results_b.keys())
     only_a = set(results_a.keys()) - set(results_b.keys())
     only_b = set(results_b.keys()) - set(results_a.keys())
@@ -161,29 +167,48 @@ def print_comparison(subset_name, model_a, model_b, results_a, results_b, alpha)
     if only_a or only_b:
         print(f"  Note: {len(only_a)} questions only in {model_a}, {len(only_b)} only in {model_b}")
 
-    # Build contingency table
+    # Detect repeats
+    max_rep_a = max(len(results_a[idx]) for idx in common)
+    max_rep_b = max(len(results_b[idx]) for idx in common)
+    has_repeats = max(max_rep_a, max_rep_b) > 1
+
+    # Build contingency table via majority vote; also track raw accuracy
     a = b = c = d = 0
+    correct_a = correct_b = evals_a = evals_b = 0
     for idx in common:
-        a_correct = results_a[idx] >= 0.5
-        b_correct = results_b[idx] >= 0.5
-        if a_correct and b_correct:
+        sa = results_a[idx]
+        sb = results_b[idx]
+        ca = sum(1 for s in sa if s >= 0.5)
+        cb = sum(1 for s in sb if s >= 0.5)
+        correct_a += ca
+        correct_b += cb
+        evals_a += len(sa)
+        evals_b += len(sb)
+
+        va = majority_vote(sa)
+        vb = majority_vote(sb)
+        if va and vb:
             a += 1
-        elif a_correct and not b_correct:
+        elif va and not vb:
             b += 1
-        elif not a_correct and b_correct:
+        elif not va and vb:
             c += 1
         else:
             d += 1
 
     n = len(common)
-    acc_a = (a + b) / n * 100
-    acc_b = (a + c) / n * 100
+    acc_a = correct_a / evals_a * 100
+    acc_b = correct_b / evals_b * 100
 
-    print(f"\n  Subset: {subset_name} ({n} questions)")
+    # Print results
+    rep_str = f", {max_rep_a} repeats" if has_repeats else ""
+    print(f"\n  Subset: {subset_name} ({n} questions{rep_str})")
     print(f"    {model_a} accuracy: {acc_a:.2f}%")
     print(f"    {model_b} accuracy: {acc_b:.2f}%")
     print()
-    print(f"    Contingency Table:")
+
+    label = "Contingency Table (majority vote):" if has_repeats else "Contingency Table:"
+    print(f"    {label}")
     print(f"    {'':20s} {model_b}")
     print(f"    {'':20s} {'Correct':>8s}  {'Wrong':>8s}")
     print(f"    {model_a}")
@@ -210,19 +235,22 @@ def print_comparison(subset_name, model_a, model_b, results_a, results_b, alpha)
             print(f"    Result: NOT significant (p >= {alpha})")
             print(f"    -> No significant difference between models")
 
-    return a, b, c, d
+    return {
+        'a': a, 'b': b, 'c': c, 'd': d,
+        'correct_a': correct_a, 'evals_a': evals_a,
+        'correct_b': correct_b, 'evals_b': evals_b,
+        'has_repeats': has_repeats,
+    }
 
 
 def main():
     args = parse_args()
 
-    # Validate directories
     for d in [args.run_dir_a, args.run_dir_b]:
         if not os.path.isdir(d):
             print(f"Error: Directory not found: {d}", file=sys.stderr)
             sys.exit(1)
 
-    # Load reviews
     model_a, results_a = load_reviews(args.run_dir_a, args.metric)
     model_b, results_b = load_reviews(args.run_dir_b, args.metric)
 
@@ -233,7 +261,6 @@ def main():
     print(f"  Metric: {args.metric}, Alpha: {args.alpha}")
     print("=" * 70)
 
-    # Match subsets across the two runs
     subsets_a = set(results_a.keys())
     subsets_b = set(results_b.keys())
     common_subsets = sorted(subsets_a & subsets_b)
@@ -251,25 +278,26 @@ def main():
     if only_in_b:
         print(f"\n  Warning: Subsets only in {model_b}: {sorted(only_in_b)}")
 
-    # Per-subset comparison
-    total_a = total_b = total_c = total_d = 0
+    # Aggregate across subsets
+    tot = {'a': 0, 'b': 0, 'c': 0, 'd': 0,
+           'correct_a': 0, 'evals_a': 0, 'correct_b': 0, 'evals_b': 0}
+    any_repeats = False
+
     for subset in common_subsets:
         result = print_comparison(
             subset, model_a, model_b,
             results_a[subset], results_b[subset], args.alpha
         )
         if result:
-            a, b, c, d = result
-            total_a += a
-            total_b += b
-            total_c += c
-            total_d += d
+            for k in ['a', 'b', 'c', 'd', 'correct_a', 'evals_a', 'correct_b', 'evals_b']:
+                tot[k] += result[k]
+            any_repeats = any_repeats or result['has_repeats']
 
     # Overall comparison (if multiple subsets)
     if len(common_subsets) > 1:
-        total_n = total_a + total_b + total_c + total_d
-        acc_a = (total_a + total_b) / total_n * 100
-        acc_b = (total_a + total_c) / total_n * 100
+        total_n = tot['a'] + tot['b'] + tot['c'] + tot['d']
+        acc_a = tot['correct_a'] / tot['evals_a'] * 100
+        acc_b = tot['correct_b'] / tot['evals_b'] * 100
 
         print()
         print("-" * 70)
@@ -277,27 +305,29 @@ def main():
         print(f"    {model_a} accuracy: {acc_a:.2f}%")
         print(f"    {model_b} accuracy: {acc_b:.2f}%")
         print()
-        print(f"    Contingency Table:")
+
+        label = "Contingency Table (majority vote):" if any_repeats else "Contingency Table:"
+        print(f"    {label}")
         print(f"    {'':20s} {model_b}")
         print(f"    {'':20s} {'Correct':>8s}  {'Wrong':>8s}")
         print(f"    {model_a}")
-        print(f"      {'Correct':12s}    {total_a:>8d}  {total_b:>8d}")
-        print(f"      {'Wrong':12s}    {total_c:>8d}  {total_d:>8d}")
+        print(f"      {'Correct':12s}    {tot['a']:>8d}  {tot['b']:>8d}")
+        print(f"      {'Wrong':12s}    {tot['c']:>8d}  {tot['d']:>8d}")
         print()
 
-        method, stat, p = mcnemar_test(total_b, total_c)
+        method, stat, p = mcnemar_test(tot['b'], tot['c'])
         if method == 'none':
             print(f"    Models agree on every question. No test needed.")
         elif method == 'chi2':
-            print(f"    Discordant pairs: b={total_b}, c={total_c}")
+            print(f"    Discordant pairs: b={tot['b']}, c={tot['c']}")
             print(f"    McNemar chi2 = {stat:.4f}, p = {p:.4e}")
         else:
-            print(f"    Discordant pairs: b={total_b}, c={total_c}")
+            print(f"    Discordant pairs: b={tot['b']}, c={tot['c']}")
             print(f"    p = {p:.4e}")
 
         if method != 'none':
             if p < args.alpha:
-                better = model_b if total_c > total_b else model_a
+                better = model_b if tot['c'] > tot['b'] else model_a
                 print(f"    Result: SIGNIFICANT (p < {args.alpha})")
                 print(f"    -> {better} is significantly better")
             else:
